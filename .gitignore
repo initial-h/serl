@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# Logs
+*.log
+
+# Large files / binary artifacts
+*.pkl
+*.h5
+*.ckpt
+*.pth
+
+# Environment
+.env
+venv/
+env/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+.cursor/
