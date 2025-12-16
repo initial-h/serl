@@ -76,8 +76,8 @@ def convert_sparse_to_dense(input_path, output_path, discount=0.8):
 
 if __name__ == "__main__":
     convert_sparse_to_dense(
-        "examples/async_drq_sim/franka_lift_cube_image_20_trajs_sparse.pkl",
-        "examples/async_drq_sim/franka_lift_cube_image_20_trajs_dense_generated.pkl",
+        "franka_lift_cube_image_20_trajs_sparse.pkl",
+        "franka_lift_cube_image_20_trajs_dense_generated.pkl",
         discount=0.8
     )
 

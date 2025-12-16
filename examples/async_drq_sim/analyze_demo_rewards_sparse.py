@@ -102,6 +102,12 @@ def analyze_rewards(pkl_path):
 
 if __name__ == "__main__":
     import sys
-    path = sys.argv[1] if len(sys.argv) > 1 else "examples/async_drq_sim/franka_lift_cube_image_20_trajs_sparse.pkl"
+    # Default path is sparse data
+    # To analyze dense data, change the filename below or pass it as an argument:
+    # e.g. "franka_lift_cube_image_20_trajs_dense_generated.pkl" 
+    # franka_lift_cube_image_20_trajs_sparse
+    default_path = "examples/async_drq_sim/franka_lift_cube_image_20_trajs_dense_generated.pkl"
+    
+    path = sys.argv[1] if len(sys.argv) > 1 else default_path
     analyze_rewards(path)
 
