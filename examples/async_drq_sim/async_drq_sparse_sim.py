@@ -47,6 +47,11 @@ flags.DEFINE_integer("seed", 42, "Random seed.")
 flags.DEFINE_bool("save_model", False, "Whether to save model.")
 flags.DEFINE_integer("batch_size", 32, "Batch size.") # 256
 flags.DEFINE_integer("critic_actor_ratio", 4, "critic to actor update ratio.")
+flags.DEFINE_float(
+    "densify_discount",
+    0.8,
+    "Discount factor used for reward densification (NOT the RL gamma).",
+)
 
 flags.DEFINE_integer("max_steps", 1000000, "Maximum number of training steps.")
 flags.DEFINE_integer("replay_buffer_capacity", 200000, "Replay buffer capacity.")
@@ -168,6 +173,25 @@ def actor(agent: DrQAgent, data_store, env, sampling_rng):
 
             obs = next_obs
             if done or truncated:
+                # Reward densification (user-defined):
+                # Use the FIRST success (reward==1) as the boundary.
+                # For all steps before that, back-propagate a discounted reward:
+                #   r_i := 1.0 * discount^(first_success_idx - i)
+                # After the first success, keep rewards unchanged (success stays 1, failure stays 0).
+                first_success_idx = None
+                for i, t in enumerate(episode_transitions):
+                    # `rewards` is typically a 0-d np array; cast safely to float.
+                    if float(np.asarray(t["rewards"])) >= 0.99:
+                        first_success_idx = i
+                        break
+
+                if first_success_idx is not None and first_success_idx > 0:
+                    for i in range(first_success_idx):
+                        steps_back = first_success_idx - i
+                        episode_transitions[i]["rewards"] = np.asarray(
+                            1.0 * (FLAGS.densify_discount ** steps_back), dtype=np.float32
+                        )
+
                 for t in episode_transitions:
                     data_store.insert(t)
                 episode_transitions = []
@@ -177,6 +201,9 @@ def actor(agent: DrQAgent, data_store, env, sampling_rng):
                 client.update()
                 running_return = 0.0
                 obs, _ = env.reset()
+
+        # if step % FLAGS.steps_per_update == 0:
+        #     client.update()
 
         if step % FLAGS.eval_period == 0:
             with timer.context("eval"):
