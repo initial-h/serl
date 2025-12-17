@@ -165,8 +165,8 @@ class PandaPickCubeGymEnv(MujocoGymEnv):
 
         # Sample a new block position.
         block_xy = np.random.uniform(*_SAMPLING_BOUNDS) # 
-        # self._data.jnt("block").qpos[:3] = (*block_xy, self._block_z)
-        self._data.jnt("block").qpos[:3] = (*[0.45, 0], self._block_z)
+        self._data.jnt("block").qpos[:3] = (*block_xy, self._block_z)
+        # self._data.jnt("block").qpos[:3] = (*[0.45, 0], self._block_z)
         mujoco.mj_forward(self._model, self._data)
 
         # Cache the initial block height.

@@ -26,3 +26,6 @@ env/
 .vscode/
 .idea/
 .cursor/
+
+# macOS
+.DS_Store

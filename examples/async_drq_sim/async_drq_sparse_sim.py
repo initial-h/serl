@@ -132,6 +132,7 @@ def actor(agent: DrQAgent, data_store, env, sampling_rng):
     # training loop
     timer = Timer()
     running_return = 0.0
+    episode_transitions = []
 
     for step in tqdm.tqdm(range(FLAGS.max_steps), dynamic_ncols=True):
         timer.tick("total")
@@ -163,15 +164,19 @@ def actor(agent: DrQAgent, data_store, env, sampling_rng):
                 masks=1.0 - done,
                 dones=done or truncated,
             )
-            data_store.insert(transition)
+            episode_transitions.append(transition)
 
             obs = next_obs
             if done or truncated:
+                for t in episode_transitions:
+                    data_store.insert(t)
+                episode_transitions = []
+                # Push this episode's data to the learner (and fetch latest params) immediately.
+                # This makes data transmission truly per-episode instead of being gated by
+                # `steps_per_update`.
+                client.update()
                 running_return = 0.0
                 obs, _ = env.reset()
-
-        if step % FLAGS.steps_per_update == 0:
-            client.update()
 
         if step % FLAGS.eval_period == 0:
             with timer.context("eval"):
