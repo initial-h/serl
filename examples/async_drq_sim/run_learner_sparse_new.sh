@@ -7,5 +7,5 @@ python async_drq_sparse_sim.py "$@" \
     --training_starts 1000 \
     --critic_actor_ratio 4 \
     --encoder_type resnet-pretrained \
-    --demo_path franka_lift_cube_image_20_trajs_sparse.pkl \
+    --demo_path franka_lift_cube_image_20_trajs_dense_generated.pkl \
     --reward_type sparse \
