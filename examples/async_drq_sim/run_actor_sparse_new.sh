@@ -7,3 +7,4 @@ python async_drq_sparse_sim.py "$@" \
     --random_steps 1000 \
     --encoder_type resnet-pretrained \
     --reward_type sparse \
+    --render \
