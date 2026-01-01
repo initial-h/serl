@@ -45,7 +45,7 @@ flags.DEFINE_string("exp_name", None, "Name of the experiment for wandb logging.
 flags.DEFINE_integer("max_traj_length", 1000, "Maximum length of trajectory.")
 flags.DEFINE_integer("seed", 42, "Random seed.")
 flags.DEFINE_bool("save_model", False, "Whether to save model.")
-flags.DEFINE_integer("batch_size", 32, "Batch size.") # 256
+flags.DEFINE_integer("batch_size", 128, "Batch size.") # 256
 flags.DEFINE_integer("critic_actor_ratio", 4, "critic to actor update ratio.")
 flags.DEFINE_float(
     "densify_discount",
@@ -65,6 +65,7 @@ flags.DEFINE_integer("eval_period", 2000, "Evaluation period.")
 flags.DEFINE_integer("eval_n_trajs", 5, "Number of trajectories for evaluation.")
 
 flags.DEFINE_float("target_utd", -1.0, "Target UTD ratio. -1.0 means no limit.")
+flags.DEFINE_float("utd_tolerance", 0.5, "UTD tolerance factor. Actor waits only if UTD exceeds target_utd * (1 + tolerance).")
 
 # flag to indicate if this is a leaner or a actor
 flags.DEFINE_boolean("learner", False, "Is this a learner or a trainer.")
@@ -121,9 +122,16 @@ def actor(agent: DrQAgent, data_store, env, sampling_rng):
         wait_for_server=True,
     )
 
+    learner_update_steps = 0
+
     # Function to update the agent with new params
-    def update_params(params):
-        nonlocal agent
+    def update_params(data):
+        nonlocal agent, learner_update_steps
+        if isinstance(data, dict) and "params" in data:
+            params = data["params"]
+            learner_update_steps = data["update_steps"]
+        else:
+            params = data
         agent = agent.replace(state=agent.state.replace(params=params))
 
     client.recv_network_callback(update_params)
@@ -144,6 +152,17 @@ def actor(agent: DrQAgent, data_store, env, sampling_rng):
 
     for step in tqdm.tqdm(range(FLAGS.max_steps), dynamic_ncols=True):
         timer.tick("total")
+
+        # target_utd control: Actor waits for Learner
+        # Only throttle if the learner has already started (learner_update_steps > 0)
+        # and we are beyond the initial random/training starts.
+        # Use tolerance to avoid deadlock from communication delays and episodic data transfer.
+        if FLAGS.target_utd > 0 and learner_update_steps > 0 and step > FLAGS.training_starts:
+            current_data_steps = step - FLAGS.training_starts
+            # Allow actor to run ahead by (1 + tolerance) factor before waiting
+            max_allowed_data_steps = learner_update_steps / FLAGS.target_utd * (1.0 + FLAGS.utd_tolerance)
+            if current_data_steps > max_allowed_data_steps:
+                time.sleep(0.05)  # Sleep briefly to let Learner catch up
 
         with timer.context("sample_actions"):
             if step < FLAGS.random_steps:
@@ -285,7 +304,7 @@ def learner(
     pbar.close()
 
     # send the initial network to the actor
-    server.publish_network(agent.state.params)
+    server.publish_network({"params": agent.state.params, "update_steps": 0})
     print_green("sent initial network to actor")
 
     # 50/50 sampling from RLPD, half from demo and half from online experience if
@@ -324,10 +343,14 @@ def learner(
 
     for step in tqdm.tqdm(range(FLAGS.max_steps), dynamic_ncols=True, desc="learner"):
         # UTD control logic: learner_steps / total_data
+        # Use tolerance to allow some slack
         if FLAGS.target_utd > 0:
             total_data = len(replay_buffer) - FLAGS.training_starts
-            while (update_steps + 1) > total_data * FLAGS.target_utd:
-                time.sleep(0.01)
+            # Allow learner to lag behind by (1 - tolerance) factor before slowing down
+            min_required_data = (update_steps + 1) / FLAGS.target_utd * (1.0 - FLAGS.utd_tolerance)
+            while total_data < min_required_data:
+                time.sleep(0.05)
+                total_data = len(replay_buffer) - FLAGS.training_starts
 
         # run n-1 critic updates and 1 critic + actor update.
         # This makes training on GPU faster by reducing the large batch transfer time from CPU to GPU
@@ -359,7 +382,7 @@ def learner(
         # publish the updated network
         if step > 0 and step % (FLAGS.steps_per_update) == 0:
             agent = jax.block_until_ready(agent)
-            server.publish_network(agent.state.params)
+            server.publish_network({"params": agent.state.params, "update_steps": update_steps})
 
         if update_steps % FLAGS.log_period == 0 and wandb_logger:
             total_data = max(1, len(replay_buffer) - FLAGS.training_starts)
