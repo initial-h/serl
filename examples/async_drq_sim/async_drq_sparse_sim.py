@@ -64,6 +64,8 @@ flags.DEFINE_integer("log_period", 10, "Logging period.")
 flags.DEFINE_integer("eval_period", 2000, "Evaluation period.")
 flags.DEFINE_integer("eval_n_trajs", 5, "Number of trajectories for evaluation.")
 
+flags.DEFINE_float("target_utd", -1.0, "Target UTD ratio. -1.0 means no limit.")
+
 # flag to indicate if this is a leaner or a actor
 flags.DEFINE_boolean("learner", False, "Is this a learner or a trainer.")
 flags.DEFINE_boolean("actor", False, "Is this a learner or a trainer.")
@@ -321,6 +323,12 @@ def learner(
     )
 
     for step in tqdm.tqdm(range(FLAGS.max_steps), dynamic_ncols=True, desc="learner"):
+        # UTD control logic: learner_steps / total_data
+        if FLAGS.target_utd > 0:
+            total_data = len(replay_buffer) - FLAGS.training_starts
+            while (update_steps + 1) > total_data * FLAGS.target_utd:
+                time.sleep(0.01)
+
         # run n-1 critic updates and 1 critic + actor update.
         # This makes training on GPU faster by reducing the large batch transfer time from CPU to GPU
         for critic_step in range(FLAGS.critic_actor_ratio - 1):
@@ -354,8 +362,18 @@ def learner(
             server.publish_network(agent.state.params)
 
         if update_steps % FLAGS.log_period == 0 and wandb_logger:
+            total_data = max(1, len(replay_buffer) - FLAGS.training_starts)
+            current_utd = update_steps / total_data
+            replay_ratio = current_utd * FLAGS.batch_size
+            
             wandb_logger.log(update_info, step=update_steps)
-            wandb_logger.log({"timer": timer.get_average_times()}, step=update_steps)
+            wandb_logger.log({
+                "timer": timer.get_average_times(),
+                "utd": current_utd,
+                "replay_ratio": replay_ratio,
+                "replay_buffer_size": len(replay_buffer)
+            }, step=update_steps)
+            print(f"Step: {update_steps}, UTD: {current_utd:.2f}, ReplayRatio: {replay_ratio:.1f}, Buffer: {len(replay_buffer)}")
 
         if FLAGS.save_model and FLAGS.checkpoint_period and update_steps > 0 and update_steps % FLAGS.checkpoint_period == 0:
             assert FLAGS.checkpoint_path is not None
@@ -400,6 +418,11 @@ def main(_):
     )
 
     if FLAGS.checkpoint_path:
+        if not FLAGS.eval:
+            import datetime
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            exp_name = FLAGS.exp_name or FLAGS.env
+            FLAGS.checkpoint_path = os.path.join(FLAGS.checkpoint_path, f"{exp_name}_{timestamp}")
         FLAGS.checkpoint_path = os.path.abspath(FLAGS.checkpoint_path)
 
     image_keys = [key for key in env.observation_space.keys() if key != "state"]
