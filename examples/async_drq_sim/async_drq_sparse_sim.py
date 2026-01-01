@@ -157,13 +157,14 @@ def actor(agent: DrQAgent, data_store, env, sampling_rng):
         # target_utd control: Actor waits for Learner
         # Only throttle if the learner has already started (learner_update_steps > 0)
         # and we are beyond the initial random/training starts.
-        # Use tolerance to avoid deadlock from communication delays and episodic data transfer.
         if FLAGS.target_utd > 0 and learner_update_steps > 0 and step > FLAGS.training_starts:
             current_data_steps = step - FLAGS.training_starts
             # Allow actor to run ahead by (1 + tolerance) factor before waiting
             max_allowed_data_steps = learner_update_steps / FLAGS.target_utd * (1.0 + FLAGS.utd_tolerance)
-            if current_data_steps > max_allowed_data_steps:
-                time.sleep(0.05)  # Sleep briefly to let Learner catch up
+            while current_data_steps > max_allowed_data_steps:
+                time.sleep(0.1)  # Wait for Learner to catch up
+                # max_allowed_data_steps might have updated from server
+                max_allowed_data_steps = learner_update_steps / FLAGS.target_utd * (1.0 + FLAGS.utd_tolerance)
 
         with timer.context("sample_actions"):
             if step < FLAGS.random_steps:
@@ -349,14 +350,13 @@ def learner(
 
     for step in tqdm.tqdm(range(FLAGS.max_steps), dynamic_ncols=True, desc="learner"):
         # UTD control logic: learner_steps / total_data
-        # Use tolerance to allow some slack
-        if FLAGS.target_utd > 0:
-            effective_env_steps = max(1, total_env_steps - FLAGS.training_starts)
-            # Allow learner to lag behind by (1 - tolerance) factor before slowing down
+        if FLAGS.target_utd > 0 and total_env_steps > FLAGS.training_starts:
+            effective_env_steps = total_env_steps - FLAGS.training_starts
+            # Allow learner to run behind by (1 - tolerance) factor before slowing down
             min_required_data = (update_steps + 1) / FLAGS.target_utd * (1.0 - FLAGS.utd_tolerance)
             while effective_env_steps < min_required_data:
-                time.sleep(0.05)
-                effective_env_steps = max(1, total_env_steps - FLAGS.training_starts)
+                time.sleep(0.1)  # Wait for Actor to collect more data
+                effective_env_steps = total_env_steps - FLAGS.training_starts
 
         # run n-1 critic updates and 1 critic + actor update.
         # This makes training on GPU faster by reducing the large batch transfer time from CPU to GPU
