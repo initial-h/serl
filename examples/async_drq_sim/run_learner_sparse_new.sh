@@ -9,3 +9,6 @@ python async_drq_sparse_sim.py "$@" \
     --encoder_type resnet-pretrained \
     --demo_path franka_lift_cube_image_20_trajs_dense_generated.pkl \
     --reward_type sparse \
+    --checkpoint_path ./checkpoints \
+    --checkpoint_period 10000 \
+    --save_model True

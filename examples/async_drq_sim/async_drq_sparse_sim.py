@@ -86,6 +86,7 @@ flags.DEFINE_boolean(
 
 flags.DEFINE_string("log_rlds_path", None, "Path to save RLDS logs.")
 flags.DEFINE_string("preload_rlds_path", None, "Path to preload RLDS data.")
+flags.DEFINE_boolean("eval", False, "Whether to run in evaluation mode.")
 
 devices = jax.local_devices()
 num_devices = len(devices)
@@ -260,6 +261,13 @@ def learner(
     server.register_data_store(FLAGS.store_name, replay_buffer)
     server.start(threaded=True)
 
+    # Save initial model (Step 0) for immediate evaluation testing
+    if FLAGS.save_model and FLAGS.checkpoint_path:
+        checkpoints.save_checkpoint(
+            FLAGS.checkpoint_path, agent.state, step=0, keep=20
+        )
+        print_green(f"Saved initial checkpoint to {FLAGS.checkpoint_path}")
+
     # Loop to wait until replay_buffer is filled
     pbar = tqdm.tqdm(
         total=FLAGS.training_starts,
@@ -349,7 +357,7 @@ def learner(
             wandb_logger.log(update_info, step=update_steps)
             wandb_logger.log({"timer": timer.get_average_times()}, step=update_steps)
 
-        if FLAGS.checkpoint_period and update_steps % FLAGS.checkpoint_period == 0:
+        if FLAGS.save_model and FLAGS.checkpoint_period and update_steps > 0 and update_steps % FLAGS.checkpoint_period == 0:
             assert FLAGS.checkpoint_path is not None
             checkpoints.save_checkpoint(
                 FLAGS.checkpoint_path, agent.state, step=update_steps, keep=20
@@ -391,6 +399,9 @@ def main(_):
         f"broadcast_port={FLAGS.broadcast_port}"
     )
 
+    if FLAGS.checkpoint_path:
+        FLAGS.checkpoint_path = os.path.abspath(FLAGS.checkpoint_path)
+
     image_keys = [key for key in env.observation_space.keys() if key != "state"]
 
     rng, sampling_rng = jax.random.split(rng)
@@ -412,6 +423,13 @@ def main(_):
         )
 
     if FLAGS.learner:
+        # Checkpoint restoration
+        if FLAGS.checkpoint_path:
+            agent = agent.replace(
+                state=checkpoints.restore_checkpoint(FLAGS.checkpoint_path, agent.state)
+            )
+            print_green(f"Restored model from {FLAGS.checkpoint_path}")
+
         sampling_rng = (
             jax.device_put(sampling_rng, device=replicated_device)
             if replicated_device is not None
@@ -472,6 +490,13 @@ def main(_):
         )
 
     elif FLAGS.actor:
+        # Checkpoint restoration
+        if FLAGS.checkpoint_path:
+            agent = agent.replace(
+                state=checkpoints.restore_checkpoint(FLAGS.checkpoint_path, agent.state)
+            )
+            print_green(f"Restored model from {FLAGS.checkpoint_path}")
+
         sampling_rng = (
             jax.device_put(sampling_rng, device=replicated_device)
             if replicated_device is not None
@@ -483,8 +508,52 @@ def main(_):
         print_green("starting actor loop")
         actor(agent, data_store, env, sampling_rng)
 
+    elif FLAGS.eval:
+        # Checkpoint restoration
+        if FLAGS.checkpoint_path:
+            agent = agent.replace(
+                state=checkpoints.restore_checkpoint(FLAGS.checkpoint_path, agent.state)
+            )
+            print_green(f"Restored model from {FLAGS.checkpoint_path}")
+
+        print_green("starting evaluation")
+        # create eval env
+        if FLAGS.render:
+            eval_env = gym.make(FLAGS.env, render_mode="human", reward_type=FLAGS.reward_type)
+        else:
+            eval_env = gym.make(FLAGS.env, reward_type=FLAGS.reward_type)
+
+        if FLAGS.env == "PandaPickCubeVision-v0":
+            eval_env = SERLObsWrapper(eval_env)
+            eval_env = ChunkingWrapper(eval_env, obs_horizon=1, act_exec_horizon=None)
+        eval_env = RecordEpisodeStatistics(eval_env)
+
+        # JIT the forward functions for speed
+        @jax.jit
+        def get_action_and_q(observations):
+            action = agent.sample_actions(observations, argmax=True)
+            # forward_critic returns (ensemble_size, batch_size)
+            qs = agent.forward_critic(observations, action, rng=None, train=False)
+            return action, jnp.mean(qs)
+
+        for episode in range(FLAGS.eval_n_trajs):
+            obs, _ = eval_env.reset()
+            done = False
+            truncated = False
+            episode_reward = 0
+            step = 0
+            while not (done or truncated):
+                action, q = get_action_and_q(jax.device_put(obs))
+                action = np.asarray(action)
+
+                obs, reward, done, truncated, info = eval_env.step(action)
+                episode_reward += reward
+                print(f"Episode: {episode}, Step: {step}, Q-Value: {q:.4f}, Reward: {reward:.4f}")
+                step += 1
+            print_green(f"Episode {episode} finished with reward {episode_reward}")
+
     else:
-        raise NotImplementedError("Must be either a learner or an actor")
+        raise NotImplementedError("Must be either a learner, actor or eval")
 
 
 if __name__ == "__main__":
