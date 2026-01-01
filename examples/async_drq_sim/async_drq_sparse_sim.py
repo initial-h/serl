@@ -149,6 +149,7 @@ def actor(agent: DrQAgent, data_store, env, sampling_rng):
     timer = Timer()
     running_return = 0.0
     episode_transitions = []
+    total_env_steps = 0  # Track total environment steps for accurate UTD calculation
 
     for step in tqdm.tqdm(range(FLAGS.max_steps), dynamic_ncols=True):
         timer.tick("total")
@@ -183,6 +184,7 @@ def actor(agent: DrQAgent, data_store, env, sampling_rng):
             reward = np.asarray(reward, dtype=np.float32)
             info = np.asarray(info)
             running_return += reward
+            total_env_steps += 1  # Increment environment step counter
             transition = dict(
                 observations=obs,
                 actions=actions,
@@ -234,13 +236,13 @@ def actor(agent: DrQAgent, data_store, env, sampling_rng):
                     env=eval_env,
                     num_episodes=FLAGS.eval_n_trajs,
                 )
-            stats = {"eval": evaluate_info}
+            stats = {"eval": evaluate_info, "total_env_steps": total_env_steps}
             client.request("send-stats", stats)
 
         timer.tock("total")
 
         if step % FLAGS.log_period == 0:
-            stats = {"timer": timer.get_average_times()}
+            stats = {"timer": timer.get_average_times(), "total_env_steps": total_env_steps}
             client.request("send-stats", stats)
 
 
@@ -265,10 +267,14 @@ def learner(
 
     # To track the step in the training loop
     update_steps = 0
+    total_env_steps = 0  # Track total environment steps received from actor
 
     def stats_callback(type: str, payload: dict) -> dict:
         """Callback for when server receives stats request."""
         assert type == "send-stats", f"Invalid request type: {type}"
+        nonlocal total_env_steps
+        if "total_env_steps" in payload:
+            total_env_steps = max(total_env_steps, payload["total_env_steps"])
         if wandb_logger is not None:
             wandb_logger.log(payload, step=update_steps)
         return {}  # not expecting a response
@@ -345,12 +351,12 @@ def learner(
         # UTD control logic: learner_steps / total_data
         # Use tolerance to allow some slack
         if FLAGS.target_utd > 0:
-            total_data = len(replay_buffer) - FLAGS.training_starts
+            effective_env_steps = max(1, total_env_steps - FLAGS.training_starts)
             # Allow learner to lag behind by (1 - tolerance) factor before slowing down
             min_required_data = (update_steps + 1) / FLAGS.target_utd * (1.0 - FLAGS.utd_tolerance)
-            while total_data < min_required_data:
+            while effective_env_steps < min_required_data:
                 time.sleep(0.05)
-                total_data = len(replay_buffer) - FLAGS.training_starts
+                effective_env_steps = max(1, total_env_steps - FLAGS.training_starts)
 
         # run n-1 critic updates and 1 critic + actor update.
         # This makes training on GPU faster by reducing the large batch transfer time from CPU to GPU
@@ -385,8 +391,8 @@ def learner(
             server.publish_network({"params": agent.state.params, "update_steps": update_steps})
 
         if update_steps % FLAGS.log_period == 0 and wandb_logger:
-            total_data = max(1, len(replay_buffer) - FLAGS.training_starts)
-            current_utd = update_steps / total_data
+            effective_env_steps = max(1, total_env_steps - FLAGS.training_starts)
+            current_utd = update_steps / effective_env_steps
             replay_ratio = current_utd * FLAGS.batch_size
             
             wandb_logger.log(update_info, step=update_steps)
@@ -394,9 +400,10 @@ def learner(
                 "timer": timer.get_average_times(),
                 "utd": current_utd,
                 "replay_ratio": replay_ratio,
-                "replay_buffer_size": len(replay_buffer)
+                "replay_buffer_size": len(replay_buffer),
+                "total_env_steps": total_env_steps
             }, step=update_steps)
-            print(f"Step: {update_steps}, UTD: {current_utd:.2f}, ReplayRatio: {replay_ratio:.1f}, Buffer: {len(replay_buffer)}")
+            print(f"Step: {update_steps}, UTD: {current_utd:.2f}, ReplayRatio: {replay_ratio:.1f}, Buffer: {len(replay_buffer)}, EnvSteps: {total_env_steps}")
 
         if FLAGS.save_model and FLAGS.checkpoint_period and update_steps > 0 and update_steps % FLAGS.checkpoint_period == 0:
             assert FLAGS.checkpoint_path is not None

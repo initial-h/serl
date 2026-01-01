@@ -9,4 +9,4 @@ python async_drq_sparse_sim.py "$@" \
     --encoder_type resnet-pretrained \
     --reward_type sparse \
     --render \
-    --target_utd 1
+    --target_utd -1

@@ -29,3 +29,4 @@ env/
 
 # macOS
 .DS_Store
+examples/async_drq_sim/checkpoints/

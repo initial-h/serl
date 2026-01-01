@@ -12,4 +12,4 @@ python async_drq_sparse_sim.py "$@" \
     --checkpoint_path ./checkpoints \
     --checkpoint_period 10000 \
     --save_model True \
-    --target_utd 1
+    --target_utd -1
